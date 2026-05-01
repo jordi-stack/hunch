@@ -32,6 +32,7 @@ model EpisodicMemory {
 
   actionType      String?
   actionPayload   String?   // JSON
+  toolCalls       String?   // JSON array of {tool, input, output} objects
 
   userResponse    String?
   executedAt      DateTime?
