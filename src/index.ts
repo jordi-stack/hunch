@@ -13,6 +13,11 @@ import { prisma } from './lib/db.js';
 import { env } from './config/env.js';
 import type { UserPreferences } from './memory/types.js';
 
+function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  try { return JSON.parse(raw) as T; } catch { return fallback; }
+}
+
 const bot = createBot();
 registerCommands(bot);
 registerActions(bot);
@@ -25,6 +30,10 @@ const consolidation = new MemoryConsolidation(episodic, semantic);
 
 const app = express();
 app.use(express.json());
+app.use((_req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+});
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   alertThresholds: {
@@ -58,8 +67,217 @@ function verifyHeliusSignature(body: string, signature: string): boolean {
   return expected === signature;
 }
 
+let lastConsolidationTime: Date | null = null;
+let totalEventsProcessed = 0;
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+app.get('/api/health', async (_req, res) => {
+  try {
+    const userCount = await prisma.user.count();
+    res.json({
+      status: 'ok',
+      uptime: process.uptime(),
+      userCount,
+      lastConsolidation: lastConsolidationTime?.toISOString() ?? null,
+      totalEventsProcessed,
+      webhookConfigured: Boolean(env.HELIUS_WEBHOOK_SECRET),
+    });
+  } catch (err) {
+    console.error('[API] /api/health error:', err);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/api/decisions', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+    const [records, total] = await Promise.all([
+      prisma.episodicMemory.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.episodicMemory.count(),
+    ]);
+
+    const decisions = records.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      eventType: r.eventType,
+      eventPayload: safeJsonParse(r.eventPayload, {}),
+      reasoningTrace: r.reasoningTrace,
+      confidence: r.confidence,
+      actionType: r.actionType,
+      actionPayload: safeJsonParse(r.actionPayload, null),
+      toolCalls: safeJsonParse(r.toolCalls, null),
+      userResponse: r.userResponse,
+      executedAt: r.executedAt?.toISOString() ?? null,
+      executionResult: safeJsonParse(r.executionResult, null),
+      pnl1h: r.pnl1h,
+      pnl24h: r.pnl24h,
+      pnl7d: r.pnl7d,
+      createdAt: r.createdAt.toISOString(),
+    }));
+
+    res.json({ decisions, total });
+  } catch (err) {
+    console.error('[API] /api/decisions error:', err);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/api/decisions/:id', async (req, res) => {
+  try {
+    const r = await prisma.episodicMemory.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!r) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+
+    res.json({
+      id: r.id,
+      userId: r.userId,
+      eventType: r.eventType,
+      eventPayload: safeJsonParse(r.eventPayload, {}),
+      reasoningTrace: r.reasoningTrace,
+      confidence: r.confidence,
+      actionType: r.actionType,
+      actionPayload: safeJsonParse(r.actionPayload, null),
+      toolCalls: safeJsonParse(r.toolCalls, null),
+      userResponse: r.userResponse,
+      executedAt: r.executedAt?.toISOString() ?? null,
+      executionResult: safeJsonParse(r.executionResult, null),
+      pnl1h: r.pnl1h,
+      pnl24h: r.pnl24h,
+      pnl7d: r.pnl7d,
+      createdAt: r.createdAt.toISOString(),
+    });
+  } catch (err) {
+    console.error('[API] /api/decisions/:id error:', err);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/api/memory', async (_req, res) => {
+  try {
+    const records = await prisma.semanticMemory.findMany({
+      orderBy: { confidence: 'desc' },
+    });
+
+    const memories = records.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      key: r.key,
+      value: r.value,
+      confidence: r.confidence,
+      source: r.source,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+    }));
+
+    res.json({ memories });
+  } catch (err) {
+    console.error('[API] /api/memory error:', err);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/api/stats', async (_req, res) => {
+  try {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const [
+      totalDecisions,
+      approvedCount,
+      skippedCount,
+      avgConfidenceResult,
+      winRateResult,
+      pnlAggregates,
+      eventsToday,
+      proposedToday,
+    ] = await Promise.all([
+      prisma.episodicMemory.count(),
+      prisma.episodicMemory.count({ where: { userResponse: 'approved' } }),
+      prisma.episodicMemory.count({ where: { userResponse: 'skipped' } }),
+      prisma.episodicMemory.aggregate({ _avg: { confidence: true } }),
+      prisma.episodicMemory.aggregate({
+        _avg: { pnl1h: true },
+        where: { userResponse: 'approved', pnl1h: { not: null } },
+      }),
+      prisma.episodicMemory.aggregate({
+        _avg: { pnl1h: true, pnl24h: true, pnl7d: true },
+      }),
+      prisma.episodicMemory.count({
+        where: { createdAt: { gte: todayStart } },
+      }),
+      prisma.episodicMemory.count({
+        where: {
+          createdAt: { gte: todayStart },
+          actionType: { not: null },
+        },
+      }),
+    ]);
+
+    const responded = approvedCount + skippedCount;
+
+    res.json({
+      totalDecisions,
+      approvedCount,
+      skippedCount,
+      approvalRate: responded > 0 ? approvedCount / responded : 0,
+      avgConfidence: avgConfidenceResult._avg.confidence ?? 0,
+      winRate: winRateResult._avg.pnl1h ?? 0,
+      avgPnl1h: pnlAggregates._avg.pnl1h ?? 0,
+      avgPnl24h: pnlAggregates._avg.pnl24h ?? 0,
+      avgPnl7d: pnlAggregates._avg.pnl7d ?? 0,
+      eventsToday,
+      proposedToday,
+    });
+  } catch (err) {
+    console.error('[API] /api/stats error:', err);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/api/price/:mint', async (req, res) => {
+  try {
+    const { mint } = req.params;
+    const response = await fetch(`https://price.jup.ag/v6/price?ids=${mint}`);
+
+    if (!response.ok) {
+      res.status(502).json({ error: 'jupiter_unavailable' });
+      return;
+    }
+
+    const data = await response.json() as Record<string, unknown>;
+    const tokenData = (data as { data?: Record<string, unknown> }).data;
+    const mintData = tokenData?.[mint] as { price?: number; extraInfo?: { quotedPrice?: { change24h?: number } } } | undefined;
+
+    if (!mintData) {
+      res.status(404).json({ error: 'token_not_found' });
+      return;
+    }
+
+    const change24h = mintData.extraInfo?.quotedPrice?.change24h ?? null;
+
+    res.json({
+      mint,
+      price: mintData.price ?? null,
+      change24h,
+    });
+  } catch (err) {
+    console.error('[API] /api/price error:', err);
+    res.status(502).json({ error: 'jupiter_unavailable' });
+  }
 });
 
 // Helius webhook - single-user mode for hackathon MVP
@@ -127,7 +345,10 @@ app.post('/webhook/helius', async (req, res) => {
         confidence: result.confidence,
         actionType: result.suggestedAction?.type,
         actionPayload: result.suggestedAction?.params,
+        toolCalls: result.toolCalls,
       });
+
+      totalEventsProcessed++;
 
       if (result.decision !== 'ignore') {
         const { text, keyboard } = buildActionCard(result, memoryId);
@@ -152,6 +373,7 @@ async function runConsolidation(): Promise<void> {
     for (const user of users) {
       await consolidation.consolidate(user.id);
     }
+    lastConsolidationTime = new Date();
     console.log(`[Consolidation] Completed for ${users.length} user(s)`);
   } catch (err) {
     console.error('[Consolidation] Error:', err);

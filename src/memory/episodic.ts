@@ -7,6 +7,7 @@ function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
 }
 
 type EpisodicRecord = {
+  id?: string;
   userId: string;
   eventType: string;
   eventPayload: string;
@@ -14,12 +15,14 @@ type EpisodicRecord = {
   confidence: number;
   actionType: string | null;
   actionPayload: string | null;
+  toolCalls: string | null;
   userResponse: string | null;
   executedAt: Date | null;
   executionResult: string | null;
   pnl1h: number | null;
   pnl24h: number | null;
   pnl7d: number | null;
+  createdAt?: Date;
 };
 
 function toData(r: EpisodicRecord): EpisodicMemoryData {
@@ -31,6 +34,7 @@ function toData(r: EpisodicRecord): EpisodicMemoryData {
     confidence: r.confidence,
     actionType: r.actionType as EpisodicMemoryData['actionType'] | undefined,
     actionPayload: safeJsonParse<Record<string, unknown>>(r.actionPayload, undefined),
+    toolCalls: safeJsonParse<EpisodicMemoryData['toolCalls']>(r.toolCalls, undefined),
     userResponse: r.userResponse as EpisodicMemoryData['userResponse'] | undefined,
     executedAt: r.executedAt ?? undefined,
     executionResult: safeJsonParse<Record<string, unknown>>(r.executionResult, undefined),
@@ -51,6 +55,7 @@ export class EpisodicMemory {
         confidence: data.confidence,
         actionType: data.actionType ?? null,
         actionPayload: data.actionPayload ? JSON.stringify(data.actionPayload) : null,
+        toolCalls: data.toolCalls ? JSON.stringify(data.toolCalls) : null,
         userResponse: data.userResponse ?? null,
         executedAt: data.executedAt ?? null,
         executionResult: data.executionResult ? JSON.stringify(data.executionResult) : null,

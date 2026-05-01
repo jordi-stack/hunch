@@ -6,6 +6,7 @@ export interface EpisodicMemoryData {
   confidence: number;
   actionType?: 'swap' | 'deposit' | 'withdraw' | 'notify';
   actionPayload?: Record<string, unknown>;
+  toolCalls?: Array<{ tool: string; input: unknown; output: unknown }>;
   userResponse?: 'approved' | 'skipped' | 'timeout';
   executedAt?: Date;
   executionResult?: Record<string, unknown>;
