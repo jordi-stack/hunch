@@ -42,5 +42,9 @@ Analyze this event and decide:
 2. What action (if any) should the user take?
 3. What's your confidence level (0-1)?
 
-Use tools to verify any data you need. Do not guess.`;
+Use tools to verify any data you need. Do not guess.
+
+End your response with these two lines (required):
+ACTION: <swap|deposit|withdraw|notify>
+CONFIDENCE: <0.0 to 1.0>`;
 }

@@ -21,11 +21,18 @@ const tokenPriceTool = tool({
     mint: z.string().describe('Token mint address'),
   }),
   execute: async ({ mint }: { mint: string }) => {
-    const response = await fetch(`https://price.jup.ag/v6/price?ids=${mint}`);
-    const data = await response.json() as {
-      data: Record<string, { price: number; priceChange24h: number }>;
-    };
-    return data.data[mint] || { price: 0, priceChange24h: 0 };
+    try {
+      const response = await fetch(`https://price.jup.ag/v6/price?ids=${mint}`);
+      if (!response.ok) {
+        return { price: 0, priceChange24h: 0, error: `Jupiter API returned ${response.status}` };
+      }
+      const data = await response.json() as {
+        data: Record<string, { price: number; priceChange24h: number }>;
+      };
+      return data.data[mint] || { price: 0, priceChange24h: 0, error: 'Token not found' };
+    } catch (err) {
+      return { price: 0, priceChange24h: 0, error: `Jupiter fetch failed: ${err}` };
+    }
   },
 });
 
@@ -72,16 +79,23 @@ export class ReasoningEngine {
     const tier1Config = getLLMConfig('tier1');
     const tier2Config = getLLMConfig('tier2');
 
-    // Tier 1: Quick triage
+    // Tier 1: Quick triage with structured output
     const triageResult = await generateText({
       model: getLLMProvider(tier1Config),
       system: SYSTEM_PROMPT,
-      prompt: `Quick triage: Is this event relevant to the user? Event: ${JSON.stringify(event)}. Respond with just "relevant" or "irrelevant" and a one-line reason.`,
+      prompt: `Quick triage: Is this event relevant to the user? Event: ${JSON.stringify(event)}.
+Respond with EXACTLY one of these lines first:
+VERDICT: RELEVANT
+VERDICT: IRRELEVANT
+Then a one-line reason.`,
       temperature: 0.1,
       maxOutputTokens: 100,
     });
 
-    if (triageResult.text.toLowerCase().includes('irrelevant')) {
+    const verdictMatch = triageResult.text.match(/VERDICT:\s*(RELEVANT|IRRELEVANT)/i);
+    const isIrrelevant = verdictMatch ? verdictMatch[1].toUpperCase() === 'IRRELEVANT' : triageResult.text.toLowerCase().includes('irrelevant');
+
+    if (isIrrelevant) {
       return {
         decision: 'ignore',
         reasoning: triageResult.text,
@@ -111,12 +125,39 @@ export class ReasoningEngine {
       temperature: tier2Config.temperature,
     });
 
+    // Extract tool calls from result steps
+    const toolCalls: Array<{ tool: string; input: unknown; output: unknown }> = [];
+    if (result.steps) {
+      for (const step of result.steps) {
+        if (step.toolCalls) {
+          for (const tc of step.toolCalls) {
+            toolCalls.push({
+              tool: tc.toolName,
+              input: tc.args,
+              output: step.toolResults?.find(r => r.toolCallId === tc.toolCallId)?.result,
+            });
+          }
+        }
+      }
+    }
+
+    // Parse LLM output for suggested action
+    const actionMatch = result.text.match(/ACTION:\s*(swap|deposit|withdraw|notify)/i);
+    const suggestedAction = actionMatch ? {
+      type: actionMatch[1].toLowerCase() as 'swap' | 'deposit' | 'withdraw' | 'notify',
+      params: {},
+    } : undefined;
+
+    // Parse confidence from LLM output
+    const confMatch = result.text.match(/CONFIDENCE:\s*([\d.]+)/);
+    const confidence = confMatch ? Math.min(1, Math.max(0, parseFloat(confMatch[1]))) : 0.7;
+
     return {
-      decision: 'propose_action',
+      decision: suggestedAction ? 'propose_action' : 'notify_only',
       reasoning: result.text,
-      confidence: 0.7,
-      suggestedAction: undefined,
-      toolCalls: [],
+      confidence,
+      suggestedAction,
+      toolCalls,
     };
   }
 }
