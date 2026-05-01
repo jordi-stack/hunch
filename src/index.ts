@@ -18,6 +18,28 @@ function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
   try { return JSON.parse(raw) as T; } catch { return fallback; }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function formatDecision(r: any) {
+  return {
+    id: r.id,
+    userId: r.userId,
+    eventType: r.eventType,
+    eventPayload: safeJsonParse(r.eventPayload, {}),
+    reasoningTrace: r.reasoningTrace,
+    confidence: r.confidence,
+    actionType: r.actionType,
+    actionPayload: safeJsonParse(r.actionPayload, null),
+    toolCalls: safeJsonParse(r.toolCalls, null),
+    userResponse: r.userResponse,
+    executedAt: r.executedAt?.toISOString() ?? null,
+    executionResult: safeJsonParse(r.executionResult, null),
+    pnl1h: r.pnl1h,
+    pnl24h: r.pnl24h,
+    pnl7d: r.pnl7d,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
 const bot = createBot();
 registerCommands(bot);
 registerActions(bot);
@@ -105,24 +127,7 @@ app.get('/api/decisions', async (req, res) => {
       prisma.episodicMemory.count(),
     ]);
 
-    const decisions = records.map((r) => ({
-      id: r.id,
-      userId: r.userId,
-      eventType: r.eventType,
-      eventPayload: safeJsonParse(r.eventPayload, {}),
-      reasoningTrace: r.reasoningTrace,
-      confidence: r.confidence,
-      actionType: r.actionType,
-      actionPayload: safeJsonParse(r.actionPayload, null),
-      toolCalls: safeJsonParse(r.toolCalls, null),
-      userResponse: r.userResponse,
-      executedAt: r.executedAt?.toISOString() ?? null,
-      executionResult: safeJsonParse(r.executionResult, null),
-      pnl1h: r.pnl1h,
-      pnl24h: r.pnl24h,
-      pnl7d: r.pnl7d,
-      createdAt: r.createdAt.toISOString(),
-    }));
+    const decisions = records.map(formatDecision);
 
     res.json({ decisions, total });
   } catch (err) {
@@ -142,24 +147,7 @@ app.get('/api/decisions/:id', async (req, res) => {
       return;
     }
 
-    res.json({
-      id: r.id,
-      userId: r.userId,
-      eventType: r.eventType,
-      eventPayload: safeJsonParse(r.eventPayload, {}),
-      reasoningTrace: r.reasoningTrace,
-      confidence: r.confidence,
-      actionType: r.actionType,
-      actionPayload: safeJsonParse(r.actionPayload, null),
-      toolCalls: safeJsonParse(r.toolCalls, null),
-      userResponse: r.userResponse,
-      executedAt: r.executedAt?.toISOString() ?? null,
-      executionResult: safeJsonParse(r.executionResult, null),
-      pnl1h: r.pnl1h,
-      pnl24h: r.pnl24h,
-      pnl7d: r.pnl7d,
-      createdAt: r.createdAt.toISOString(),
-    });
+    res.json(formatDecision(r));
   } catch (err) {
     console.error('[API] /api/decisions/:id error:', err);
     res.status(500).json({ error: 'internal_error' });
@@ -200,7 +188,8 @@ app.get('/api/stats', async (_req, res) => {
       approvedCount,
       skippedCount,
       avgConfidenceResult,
-      winRateResult,
+      winnersCount,
+      evaluatedCount,
       pnlAggregates,
       eventsToday,
       proposedToday,
@@ -209,8 +198,10 @@ app.get('/api/stats', async (_req, res) => {
       prisma.episodicMemory.count({ where: { userResponse: 'approved' } }),
       prisma.episodicMemory.count({ where: { userResponse: 'skipped' } }),
       prisma.episodicMemory.aggregate({ _avg: { confidence: true } }),
-      prisma.episodicMemory.aggregate({
-        _avg: { pnl1h: true },
+      prisma.episodicMemory.count({
+        where: { userResponse: 'approved', pnl1h: { gt: 0 } },
+      }),
+      prisma.episodicMemory.count({
         where: { userResponse: 'approved', pnl1h: { not: null } },
       }),
       prisma.episodicMemory.aggregate({
@@ -235,7 +226,7 @@ app.get('/api/stats', async (_req, res) => {
       skippedCount,
       approvalRate: responded > 0 ? approvedCount / responded : 0,
       avgConfidence: avgConfidenceResult._avg.confidence ?? 0,
-      winRate: winRateResult._avg.pnl1h ?? 0,
+      winRate: evaluatedCount > 0 ? winnersCount / evaluatedCount : 0,
       avgPnl1h: pnlAggregates._avg.pnl1h ?? 0,
       avgPnl24h: pnlAggregates._avg.pnl24h ?? 0,
       avgPnl7d: pnlAggregates._avg.pnl7d ?? 0,
@@ -251,6 +242,10 @@ app.get('/api/stats', async (_req, res) => {
 app.get('/api/price/:mint', async (req, res) => {
   try {
     const { mint } = req.params;
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) {
+      res.status(400).json({ error: 'invalid_mint' });
+      return;
+    }
     const response = await fetch(`https://price.jup.ag/v6/price?ids=${mint}`);
 
     if (!response.ok) {
