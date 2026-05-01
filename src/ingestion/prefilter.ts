@@ -1,0 +1,74 @@
+import { OnchainEvent } from './events.js';
+import { UserPreferences } from '../memory/types.js';
+
+export interface PrefilterResult {
+  pass: boolean;
+  reason?: string;
+}
+
+export function prefilterEvent(
+  event: OnchainEvent,
+  userPreferences: UserPreferences,
+  userPortfolio: string[]
+): PrefilterResult {
+  const { alertThresholds } = userPreferences;
+
+  switch (event.type) {
+    case 'price_change': {
+      const { tokenMint, changePercent } = event.payload as {
+        tokenMint: string;
+        changePercent: number;
+      };
+
+      const isRelevant =
+        userPreferences.tokenWhitelist.includes(tokenMint) ||
+        userPortfolio.includes(tokenMint);
+
+      if (!isRelevant) {
+        return { pass: false, reason: 'token_not_relevant' };
+      }
+
+      if (Math.abs(changePercent) < alertThresholds.priceChangePercent) {
+        return { pass: false, reason: 'change_below_threshold' };
+      }
+
+      return { pass: true };
+    }
+
+    case 'whale_tx': {
+      const { tokenMint, amount } = event.payload as {
+        tokenMint: string;
+        amount: number;
+      };
+
+      const isRelevant =
+        userPreferences.tokenWhitelist.includes(tokenMint) ||
+        userPortfolio.includes(tokenMint);
+
+      if (!isRelevant) {
+        return { pass: false, reason: 'token_not_relevant' };
+      }
+
+      if (amount < alertThresholds.whaleThresholdSol) {
+        return { pass: false, reason: 'amount_below_threshold' };
+      }
+
+      return { pass: true };
+    }
+
+    case 'defi_position': {
+      const { healthRatio } = event.payload as {
+        healthRatio?: number;
+      };
+
+      if (healthRatio && healthRatio > alertThresholds.defiHealthRatio) {
+        return { pass: false, reason: 'health_ratio_safe' };
+      }
+
+      return { pass: true };
+    }
+
+    default:
+      return { pass: false, reason: 'unknown_event_type' };
+  }
+}
