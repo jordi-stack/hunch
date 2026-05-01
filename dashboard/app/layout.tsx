@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { StatusPanel } from "./components/StatusPanel";
 import "./globals.css";
 
 const geist = Geist({
@@ -66,6 +67,9 @@ export default function RootLayout({
                 </a>
               ))}
             </nav>
+
+            {/* Status Panel */}
+            <StatusPanel />
 
             {/* Footer */}
             <div className="px-5 py-4 border-t border-white/5">

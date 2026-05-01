@@ -1,91 +1,24 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface MemoryEntry {
   id: string;
   key: string;
   value: string;
   confidence: number;
-  source: 'consolidation' | 'explicit_setting';
-  category: 'preference' | 'pattern' | 'threshold';
+  source: string;
+  createdAt: string;
   updatedAt: string;
 }
 
-const MOCK_MEMORIES: MemoryEntry[] = [
-  {
-    id: '1',
-    key: 'approval_rate_whale_tx',
-    value: '{"rate": 0.72, "approved": 13, "total": 18}',
-    confidence: 0.9,
-    source: 'consolidation',
-    category: 'pattern',
-    updatedAt: '2026-05-01T12:00:00Z',
-  },
-  {
-    id: '2',
-    key: 'approval_rate_price_change',
-    value: '{"rate": 0.45, "approved": 9, "total": 20}',
-    confidence: 1.0,
-    source: 'consolidation',
-    category: 'pattern',
-    updatedAt: '2026-05-01T12:00:00Z',
-  },
-  {
-    id: '3',
-    key: 'prefers_high_confidence',
-    value: '{"skipRate": 0.82, "sampleSize": 11}',
-    confidence: 1.0,
-    source: 'consolidation',
-    category: 'preference',
-    updatedAt: '2026-05-01T12:00:00Z',
-  },
-  {
-    id: '4',
-    key: 'preferred_action_swap',
-    value: '{"approvals": 14}',
-    confidence: 1.0,
-    source: 'consolidation',
-    category: 'pattern',
-    updatedAt: '2026-05-01T12:00:00Z',
-  },
-  {
-    id: '5',
-    key: 'preferred_action_notify',
-    value: '{"approvals": 8}',
-    confidence: 0.8,
-    source: 'consolidation',
-    category: 'pattern',
-    updatedAt: '2026-05-01T12:00:00Z',
-  },
-  {
-    id: '6',
-    key: 'confidence_threshold',
-    value: '0.7',
-    confidence: 1.0,
-    source: 'explicit_setting',
-    category: 'threshold',
-    updatedAt: '2026-04-28T09:00:00Z',
-  },
-  {
-    id: '7',
-    key: 'meme_token_avoidance',
-    value: 'User skips 4/5 meme token signals. Low confidence on speculative pumps.',
-    confidence: 0.8,
-    source: 'consolidation',
-    category: 'preference',
-    updatedAt: '2026-04-30T18:00:00Z',
-  },
-  {
-    id: '8',
-    key: 'whale_threshold_sol',
-    value: '100',
-    confidence: 1.0,
-    source: 'explicit_setting',
-    category: 'threshold',
-    updatedAt: '2026-04-28T09:00:00Z',
-  },
-];
+const API_BASE = 'http://localhost:3000';
+
+function categorizeKey(key: string): 'pattern' | 'preference' | 'threshold' {
+  if (key.startsWith('approval_rate_') || key.startsWith('preferred_action_')) return 'pattern';
+  if (key.endsWith('_threshold') || key.endsWith('Threshold')) return 'threshold';
+  return 'preference';
+}
 
 const CATEGORY_STYLES: Record<string, { label: string; color: string }> = {
   preference: { label: 'Preference', color: 'bg-accent-purple/15 text-accent-purple' },
@@ -111,45 +44,79 @@ function formatValue(key: string, value: string): string {
 }
 
 function formatKey(key: string): string {
-  return key
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export default function MemoryInspector() {
-  const [memories] = useState<MemoryEntry[]>(MOCK_MEMORIES);
+  const [memories, setMemories] = useState<MemoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'pattern' | 'preference' | 'threshold'>('all');
 
-  const filtered = filter === 'all' ? memories : memories.filter((m) => m.category === filter);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/memory`)
+      .then((r) => r.json())
+      .then((d) => {
+        setMemories(d.memories);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(e.message);
+        setLoading(false);
+      });
+  }, []);
 
-  const patterns = memories.filter((m) => m.category === 'pattern').length;
-  const avgConf = memories.reduce((sum, m) => sum + m.confidence, 0) / memories.length;
+  const withCategory = memories.map((m) => ({ ...m, category: categorizeKey(m.key) }));
+  const filtered = filter === 'all' ? withCategory : withCategory.filter((m) => m.category === filter);
 
-  const stats = [
-    { label: 'Total Memories', value: memories.length.toString() },
-    { label: 'Patterns Found', value: patterns.toString() },
-    { label: 'Avg Confidence', value: `${(avgConf * 100).toFixed(0)}%` },
-    { label: 'Last Updated', value: '2h ago' },
+  const patterns = withCategory.filter((m) => m.category === 'pattern').length;
+  const avgConf = memories.length > 0
+    ? memories.reduce((sum, m) => sum + m.confidence, 0) / memories.length
+    : 0;
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4">
+        <p className="text-accent-red text-sm">Failed to load: {error}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="text-xs px-4 py-2 rounded-lg bg-white/5 text-text-secondary border border-white/10 hover:bg-white/10 transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const statsCards = [
+    { label: 'Total Memories', value: loading ? '...' : memories.length.toString() },
+    { label: 'Patterns Found', value: loading ? '...' : patterns.toString() },
+    { label: 'Avg Confidence', value: loading ? '...' : `${(avgConf * 100).toFixed(0)}%` },
+    { label: 'Last Updated', value: loading ? '...' : memories.length > 0 ? 'recently' : 'never' },
   ];
 
   return (
     <div>
-      {/* Header */}
       <div className="mb-8 animate-fade-in">
         <h1 className="text-2xl font-semibold tracking-tight">Memory Inspector</h1>
-        <p className="text-sm text-text-secondary mt-1">
-          What your Hunch agent has learned about you
-        </p>
+        <p className="text-sm text-text-secondary mt-1">What your Hunch agent has learned about you</p>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
-        {stats.map((stat, i) => (
-          <div key={stat.label} className={`glass rounded-xl p-4 animate-slide-up stagger-${i + 1}`}>
-            <p className="text-xs text-text-muted uppercase tracking-wider mb-1">{stat.label}</p>
-            <p className="text-xl font-semibold tracking-tight">{stat.value}</p>
-          </div>
-        ))}
+        {loading
+          ? Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="glass rounded-xl p-4 animate-shimmer">
+                <div className="w-20 h-3 rounded bg-white/5 mb-2" />
+                <div className="w-16 h-6 rounded bg-white/5" />
+              </div>
+            ))
+          : statsCards.map((stat, i) => (
+              <div key={stat.label} className={`glass rounded-xl p-4 animate-slide-up stagger-${i + 1}`}>
+                <p className="text-xs text-text-muted uppercase tracking-wider mb-1">{stat.label}</p>
+                <p className="text-xl font-semibold tracking-tight">{stat.value}</p>
+              </div>
+            ))}
       </div>
 
       {/* Filters */}
@@ -173,66 +140,81 @@ export default function MemoryInspector() {
       </div>
 
       {/* Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {filtered.map((m, i) => {
-          const cat = CATEGORY_STYLES[m.category];
-          const date = new Date(m.updatedAt);
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="glass rounded-xl p-5 animate-shimmer">
+              <div className="w-32 h-4 rounded bg-white/5 mb-3" />
+              <div className="w-full h-3 rounded bg-white/5 mb-2" />
+              <div className="w-2/3 h-3 rounded bg-white/5" />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {filtered.map((m, i) => {
+            const cat = CATEGORY_STYLES[m.category];
+            const date = new Date(m.updatedAt);
 
-          return (
-            <div
-              key={m.id}
-              className={`glass glass-hover rounded-xl p-5 animate-slide-up stagger-${Math.min(i + 1, 10)} transition-all duration-300`}
-            >
-              {/* Top */}
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <h3 className="text-sm font-medium tracking-tight">{formatKey(m.key)}</h3>
-                  <p className="text-xs text-text-muted font-mono mt-0.5">{m.key}</p>
-                </div>
-                <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${cat.color}`}>
-                  {cat.label}
-                </span>
-              </div>
-
-              {/* Value */}
-              <p className="text-sm text-text-secondary mb-4 leading-relaxed">
-                {formatValue(m.key, m.value)}
-              </p>
-
-              {/* Bottom */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  {/* Confidence bar */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-text-muted">Confidence</span>
-                    <div className="w-16 h-1.5 rounded-full bg-white/5 overflow-hidden">
-                      <div
-                        className="h-full rounded-full animate-bar-fill"
-                        style={{
-                          width: `${m.confidence * 100}%`,
-                          background: 'linear-gradient(90deg, #a855f7, #06b6d4)',
-                        }}
-                      />
-                    </div>
-                    <span className="text-xs font-mono text-text-secondary">
-                      {(m.confidence * 100).toFixed(0)}%
-                    </span>
+            return (
+              <div
+                key={m.id}
+                className={`glass glass-hover rounded-xl p-5 animate-slide-up stagger-${Math.min(i + 1, 10)} transition-all duration-300`}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-medium tracking-tight">{formatKey(m.key)}</h3>
+                    <p className="text-xs text-text-muted font-mono mt-0.5">{m.key}</p>
                   </div>
-
-                  {/* Source badge */}
-                  <span className={`text-[11px] px-2 py-0.5 rounded ${SOURCE_STYLES[m.source]}`}>
-                    {m.source === 'consolidation' ? 'Learned' : 'Manual'}
+                  <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${cat.color}`}>
+                    {cat.label}
                   </span>
                 </div>
 
-                <span className="text-[11px] text-text-muted">
-                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </span>
+                <p className="text-sm text-text-secondary mb-4 leading-relaxed">
+                  {formatValue(m.key, m.value)}
+                </p>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-text-muted">Confidence</span>
+                      <div className="w-16 h-1.5 rounded-full bg-white/5 overflow-hidden">
+                        <div
+                          className="h-full rounded-full animate-bar-fill"
+                          style={{
+                            width: `${m.confidence * 100}%`,
+                            background: 'linear-gradient(90deg, #a855f7, #06b6d4)',
+                          }}
+                        />
+                      </div>
+                      <span className="text-xs font-mono text-text-secondary">
+                        {(m.confidence * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <span className={`text-[11px] px-2 py-0.5 rounded ${SOURCE_STYLES[m.source] ?? 'bg-white/5 text-text-muted'}`}>
+                      {m.source === 'consolidation' ? 'Learned' : 'Manual'}
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-text-muted">
+                    {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!loading && filtered.length === 0 && (
+        <div className="flex flex-col items-center justify-center h-32 gap-2 mt-4">
+          <p className="text-text-muted text-sm">
+            {memories.length === 0
+              ? 'No memories yet. They will appear after your agent consolidates patterns.'
+              : 'No memories match this filter.'}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
