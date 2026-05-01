@@ -57,6 +57,8 @@ export function prefilterEvent(
     }
 
     case 'defi_position': {
+      // DeFi positions are user-specific and always relevant to the owner,
+      // so we skip the token relevance check here and only filter on health ratio.
       const { healthRatio } = event.payload as {
         healthRatio?: number;
       };
