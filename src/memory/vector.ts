@@ -54,5 +54,6 @@ export function simpleEmbed(text: string, dimensions: number = 1536): number[] {
 
   // Normalize
   const norm = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+  if (norm === 0) return embedding;
   return embedding.map((val) => val / norm);
 }
