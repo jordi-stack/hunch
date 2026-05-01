@@ -258,21 +258,20 @@ app.get('/api/price/:mint', async (req, res) => {
       return;
     }
 
-    const data = await response.json() as Record<string, unknown>;
-    const tokenData = (data as { data?: Record<string, unknown> }).data;
-    const mintData = tokenData?.[mint] as { price?: number; extraInfo?: { quotedPrice?: { change24h?: number } } } | undefined;
+    const data = (await response.json()) as {
+      data: Record<string, { price: number; priceChange24h: number }>;
+    };
+    const mintData = data.data?.[mint];
 
     if (!mintData) {
       res.status(404).json({ error: 'token_not_found' });
       return;
     }
 
-    const change24h = mintData.extraInfo?.quotedPrice?.change24h ?? null;
-
     res.json({
       mint,
-      price: mintData.price ?? null,
-      change24h,
+      price: mintData.price,
+      change24h: mintData.priceChange24h,
     });
   } catch (err) {
     console.error('[API] /api/price error:', err);
