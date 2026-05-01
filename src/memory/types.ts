@@ -9,6 +9,13 @@ export interface EpisodicMemoryData {
   userResponse?: 'approved' | 'skipped' | 'timeout';
   executedAt?: Date;
   executionResult?: Record<string, unknown>;
+  pnl1h?: number;
+  pnl24h?: number;
+  pnl7d?: number;
+}
+
+export interface ProcessedEventData {
+  eventSignature: string;
 }
 
 export interface SemanticMemoryData {
