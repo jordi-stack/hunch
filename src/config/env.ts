@@ -8,6 +8,7 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
   SOLANA_RPC_URL: z.string().default('https://api.mainnet-beta.solana.com'),
   HELIUS_API_KEY: z.string().min(1),
   HELIUS_WEBHOOK_SECRET: z.string().min(1),

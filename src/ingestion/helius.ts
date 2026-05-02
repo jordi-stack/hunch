@@ -1,58 +1,67 @@
 import { OnchainEvent, PriceChangeEvent } from './events.js';
+import { getTokenInfo, getTokenPrice } from './jupiter.js';
+
+interface HeliusTransaction {
+  signature: string;
+  type: string;
+  timestamp: number;
+  tokenTransfers?: Array<{
+    mint: string;
+    tokenAmount: number;
+    fromUserAccount: string;
+    toUserAccount: string;
+  }>;
+}
+
+function isHeliusTx(value: unknown): value is HeliusTransaction {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.signature === 'string' &&
+    typeof v.type === 'string' &&
+    typeof v.timestamp === 'number'
+  );
+}
 
 export class HeliusIngestion {
-  private processedEvents: Set<string> = new Set();
-
   async processWebhook(payload: unknown): Promise<OnchainEvent[]> {
-    // Validate required fields before casting
-    const raw = payload as Record<string, unknown>;
-    if (
-      typeof raw.signature !== 'string' ||
-      typeof raw.type !== 'string' ||
-      typeof raw.timestamp !== 'number'
-    ) {
-      return [];
-    }
-
-    const data = payload as {
-      signature: string;
-      type: string;
-      timestamp: number;
-      tokenTransfers?: Array<{
-        mint: string;
-        tokenAmount: number;
-        fromUserAccount: string;
-        toUserAccount: string;
-      }>;
-    };
-
-    if (this.processedEvents.has(data.signature)) {
-      return [];
-    }
-
-    // LRU-like cleanup: drop all entries when the set gets too large
-    if (this.processedEvents.size > 10000) {
-      this.processedEvents.clear();
-    }
-    this.processedEvents.add(data.signature);
-
+    // Helius enhanced webhooks send an array of transactions per request.
+    // Accept either an array or a single object for resilience.
+    const txs: unknown[] = Array.isArray(payload) ? payload : [payload];
     const events: OnchainEvent[] = [];
 
-    if (data.type === 'SWAP' && data.tokenTransfers) {
-      for (const transfer of data.tokenTransfers) {
-        // No threshold here; prefilter handles relevance and size filtering
+    for (const raw of txs) {
+      if (!isHeliusTx(raw)) continue;
+      if (raw.type !== 'SWAP' || !raw.tokenTransfers) continue;
+
+      // Enrich every transfer in parallel.
+      const enriched = await Promise.all(
+        raw.tokenTransfers.map(async (transfer) => {
+          const [info, price] = await Promise.all([
+            getTokenInfo(transfer.mint),
+            getTokenPrice(transfer.mint),
+          ]);
+          return {
+            transfer,
+            symbol: info?.symbol ?? 'UNKNOWN',
+            priceUsd: price?.price ?? 0,
+          };
+        }),
+      );
+
+      for (const { transfer, symbol, priceUsd } of enriched) {
         events.push({
-          id: `${data.signature}-${transfer.mint}`,
+          id: `${raw.signature}-${transfer.mint}`,
           type: 'whale_tx',
-          timestamp: new Date(data.timestamp * 1000),
+          timestamp: new Date(raw.timestamp * 1000),
           payload: {
             tokenMint: transfer.mint,
-            tokenSymbol: 'UNKNOWN',
+            tokenSymbol: symbol,
             amount: transfer.tokenAmount,
-            amountUsd: 0,
+            amountUsd: transfer.tokenAmount * priceUsd,
             fromAddress: transfer.fromUserAccount,
             toAddress: transfer.toUserAccount,
-            txSignature: data.signature,
+            txSignature: raw.signature,
           },
         });
       }
@@ -62,31 +71,23 @@ export class HeliusIngestion {
   }
 
   async getPriceChange(tokenMint: string): Promise<PriceChangeEvent | null> {
-    try {
-      const response = await fetch(
-        `https://price.jup.ag/v6/price?ids=${tokenMint}`
-      );
-      const data = await response.json() as {
-        data: Record<string, { price: number; priceChange24h: number }>;
-      };
+    const [price, info] = await Promise.all([
+      getTokenPrice(tokenMint),
+      getTokenInfo(tokenMint),
+    ]);
+    if (!price) return null;
 
-      const tokenData = data.data[tokenMint];
-      if (!tokenData) return null;
-
-      return {
-        id: `price-${tokenMint}-${Date.now()}`,
-        type: 'price_change',
-        timestamp: new Date(),
-        payload: {
-          tokenMint,
-          tokenSymbol: 'UNKNOWN',
-          priceUsd: tokenData.price,
-          changePercent: tokenData.priceChange24h,
-          timeframe: '24h',
-        },
-      };
-    } catch {
-      return null;
-    }
+    return {
+      id: `price-${tokenMint}-${Date.now()}`,
+      type: 'price_change',
+      timestamp: new Date(),
+      payload: {
+        tokenMint,
+        tokenSymbol: info?.symbol ?? 'UNKNOWN',
+        priceUsd: price.price,
+        changePercent: price.priceChange24h,
+        timeframe: '24h',
+      },
+    };
   }
 }

@@ -31,7 +31,7 @@ export interface SemanticMemoryData {
 export interface UserPreferences {
   alertThresholds: {
     priceChangePercent: number;
-    whaleThresholdSol: number;
+    whaleThresholdUsd: number;
     defiHealthRatio: number;
   };
   confidenceThreshold: number;

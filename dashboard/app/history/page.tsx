@@ -21,7 +21,7 @@ interface Stats {
   avgPnl24h: number;
 }
 
-const API_BASE = 'http://localhost:3000';
+const API_BASE = '';
 
 const EVENT_LABELS: Record<string, { label: string; color: string }> = {
   price_change: { label: 'Price', color: 'bg-accent-amber/15 text-accent-amber' },

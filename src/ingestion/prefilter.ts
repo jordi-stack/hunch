@@ -36,9 +36,9 @@ export function prefilterEvent(
     }
 
     case 'whale_tx': {
-      const { tokenMint, amount } = event.payload as {
+      const { tokenMint, amountUsd } = event.payload as {
         tokenMint: string;
-        amount: number;
+        amountUsd: number;
       };
 
       const isRelevant =
@@ -49,7 +49,7 @@ export function prefilterEvent(
         return { pass: false, reason: 'token_not_relevant' };
       }
 
-      if (amount < alertThresholds.whaleThresholdSol) {
+      if (amountUsd < alertThresholds.whaleThresholdUsd) {
         return { pass: false, reason: 'amount_below_threshold' };
       }
 

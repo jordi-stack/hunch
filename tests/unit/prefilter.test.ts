@@ -6,7 +6,7 @@ import { UserPreferences } from '../../src/memory/types.js';
 const defaultPreferences: UserPreferences = {
   alertThresholds: {
     priceChangePercent: 10,
-    whaleThresholdSol: 100,
+    whaleThresholdUsd: 10000,
     defiHealthRatio: 1.5,
   },
   confidenceThreshold: 0.7,
@@ -103,7 +103,7 @@ describe('prefilterEvent', () => {
         tokenMint: 'So11111111111111111111111111111111111111112',
         tokenSymbol: 'SOL',
         amount: 50,
-        amountUsd: 7500,
+        amountUsd: 7500, // below 10000 USD threshold
         fromAddress: 'whale1',
         toAddress: 'whale2',
         txSignature: 'sig2',

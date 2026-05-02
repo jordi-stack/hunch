@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { createBot } from './telegram/bot.js';
 import { registerCommands } from './telegram/commands.js';
@@ -11,6 +11,7 @@ import { SemanticMemory } from './memory/semantic.js';
 import { MemoryConsolidation } from './memory/consolidation.js';
 import { prisma } from './lib/db.js';
 import { env } from './config/env.js';
+import { validateDefaultProviders } from './config/providers.js';
 import type { UserPreferences } from './memory/types.js';
 
 function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
@@ -45,22 +46,18 @@ registerCommands(bot);
 registerActions(bot);
 
 const helius = new HeliusIngestion();
-const reasoning = new ReasoningEngine();
 const episodic = new EpisodicMemory();
 const semantic = new SemanticMemory();
+const reasoning = new ReasoningEngine(episodic);
 const consolidation = new MemoryConsolidation(episodic, semantic);
 
 const app = express();
 app.use(express.json());
-app.use((_req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  next();
-});
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   alertThresholds: {
     priceChangePercent: 5,
-    whaleThresholdSol: 100,
+    whaleThresholdUsd: 1000,
     defiHealthRatio: 1.2,
   },
   confidenceThreshold: 0.7,
@@ -82,11 +79,11 @@ function mergePreferences(raw: Record<string, unknown> | undefined): UserPrefere
   };
 }
 
-function verifyHeliusSignature(body: string, signature: string): boolean {
-  const hmac = createHmac('sha256', env.HELIUS_WEBHOOK_SECRET);
-  hmac.update(body);
-  const expected = hmac.digest('hex');
-  return expected === signature;
+function verifyHeliusAuth(header: string): boolean {
+  const expected = Buffer.from(env.HELIUS_WEBHOOK_SECRET);
+  const provided = Buffer.from(header);
+  if (expected.length !== provided.length) return false;
+  return timingSafeEqual(expected, provided);
 }
 
 let lastConsolidationTime: Date | null = null;
@@ -274,58 +271,55 @@ app.get('/api/price/:mint', async (req, res) => {
   }
 });
 
-// Helius webhook - single-user mode for hackathon MVP
-app.post('/webhook/helius', async (req, res) => {
-  try {
-    const signature = req.headers['x-helius-signature'] as string | undefined;
-    if (!signature || !verifyHeliusSignature(JSON.stringify(req.body), signature)) {
-      res.status(401).json({ error: 'invalid_signature' });
-      return;
+async function processWebhookEvents(events: Awaited<ReturnType<HeliusIngestion['processWebhook']>>): Promise<void> {
+  // Persistent dedup via ProcessedEvent table. Skip events we've already handled
+  // (eg. Helius retries after a transient timeout).
+  const fresh: typeof events = [];
+  for (const event of events) {
+    try {
+      await prisma.processedEvent.create({ data: { eventSignature: event.id } });
+      fresh.push(event);
+    } catch {
+      // Unique constraint violation -> already processed, skip silently.
     }
+  }
+  if (fresh.length === 0) return;
 
-    const events = await helius.processWebhook(req.body);
-    if (events.length === 0) {
-      res.json({ processed: 0 });
-      return;
-    }
+  const user = await prisma.user.findFirst();
+  if (!user) {
+    console.warn('[Webhook] No user in DB, skipping', fresh.length, 'event(s)');
+    return;
+  }
 
-    // Single-user: grab the first (and only) user
-    const user = await prisma.user.findFirst();
-    if (!user) {
-      res.json({ processed: 0, reason: 'no_user' });
-      return;
-    }
+  const rawPrefs = user.preferences ? JSON.parse(user.preferences) : undefined;
+  const preferences = mergePreferences(rawPrefs);
 
-    const rawPrefs = user.preferences ? JSON.parse(user.preferences) : undefined;
-    const preferences = mergePreferences(rawPrefs);
+  const portfolio: string[] = user.watchlist
+    ? (JSON.parse(user.watchlist) as string[])
+    : [];
 
-    const portfolio: string[] = user.watchlist
-      ? (JSON.parse(user.watchlist) as string[])
-      : [];
+  const recentMemories = await episodic.getByUser(user.id, { limit: 20 });
+  const semanticMemories = await semantic.getByUser(user.id);
 
-    const recentMemories = await episodic.getByUser(user.id, { limit: 20 });
-    const semanticMemories = await semantic.getByUser(user.id);
+  const historySummary = recentMemories
+    .map((m) => `${m.eventType}: ${m.userResponse ?? 'pending'} (conf ${m.confidence.toFixed(2)})`)
+    .join('\n');
 
-    const historySummary = recentMemories
-      .map((m) => `${m.eventType}: ${m.userResponse ?? 'pending'} (conf ${m.confidence.toFixed(2)})`)
-      .join('\n');
+  const semanticSummary = semanticMemories
+    .map((m) => `${m.key}: ${m.value} (conf ${m.confidence.toFixed(2)})`)
+    .join('\n');
 
-    const semanticSummary = semanticMemories
-      .map((m) => `${m.key}: ${m.value} (conf ${m.confidence.toFixed(2)})`)
-      .join('\n');
+  const contextBlock = [historySummary, semanticSummary].filter(Boolean).join('\n---\n') || 'No prior decisions.';
+  const portfolioStr = portfolio.length > 0 ? portfolio.join(', ') : 'none';
 
-    const contextBlock = [historySummary, semanticSummary].filter(Boolean).join('\n---\n') || 'No prior decisions.';
-    const portfolioStr = portfolio.length > 0 ? portfolio.join(', ') : 'none';
-
-    let processed = 0;
-
-    for (const event of events) {
+  for (const event of fresh) {
+    try {
       const filterResult = prefilterEvent(event, preferences, portfolio);
-      if (!filterResult.pass) {
-        continue;
-      }
+      if (!filterResult.pass) continue;
 
       const result = await reasoning.reason(event, {
+        userId: user.id,
+        walletAddress: user.walletAddress ?? null,
         portfolio: portfolioStr,
         history: contextBlock,
         preferences: preferences as unknown as Record<string, unknown>,
@@ -346,19 +340,43 @@ app.post('/webhook/helius', async (req, res) => {
 
       if (result.decision !== 'ignore') {
         const { text, keyboard } = buildActionCard(result, memoryId);
-        await bot.api.sendMessage(user.telegramId, text, {
-          reply_markup: keyboard,
-        });
+        try {
+          await bot.api.sendMessage(user.telegramId, text, { reply_markup: keyboard });
+        } catch (sendErr) {
+          console.error('[Webhook] Telegram send failed:', sendErr);
+        }
       }
-
-      processed++;
+    } catch (eventErr) {
+      console.error('[Webhook] Failed to process event', event.id, eventErr);
     }
-
-    res.json({ processed });
-  } catch (err) {
-    console.error('[Webhook] Error processing Helius webhook:', err);
-    res.status(500).json({ error: 'internal_error' });
   }
+}
+
+// Helius webhook - single-user mode for hackathon MVP.
+// Responds 200 immediately and processes events in the background so
+// Helius doesn't time out and retry while the LLM is reasoning.
+app.post('/webhook/helius', async (req, res) => {
+  const auth = req.headers['authorization'] as string | undefined;
+  if (!auth || !verifyHeliusAuth(auth)) {
+    res.status(401).json({ error: 'invalid_signature' });
+    return;
+  }
+
+  let events;
+  try {
+    events = await helius.processWebhook(req.body);
+  } catch (err) {
+    console.error('[Webhook] Failed to parse payload:', err);
+    res.status(400).json({ error: 'invalid_payload' });
+    return;
+  }
+
+  res.json({ accepted: events.length });
+
+  if (events.length === 0) return;
+  processWebhookEvents(events).catch((err) => {
+    console.error('[Webhook] Background processing error:', err);
+  });
 });
 
 async function runConsolidation(): Promise<void> {
@@ -375,12 +393,15 @@ async function runConsolidation(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const port = Number(process.env.PORT) || 3000;
+  validateDefaultProviders();
+  const port = Number(process.env.PORT) || 4000;
 
-  await bot.start({
+  bot.start({
     onStart: (botInfo) => {
       console.log(`[Bot] Started as @${botInfo.username}`);
     },
+  }).catch((err) => {
+    console.error('[Bot] Long-poll error:', err);
   });
 
   const server = app.listen(port, () => {

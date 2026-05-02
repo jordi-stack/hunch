@@ -12,7 +12,7 @@ interface MemoryEntry {
   updatedAt: string;
 }
 
-const API_BASE = 'http://localhost:3000';
+const API_BASE = '';
 
 function categorizeKey(key: string): 'pattern' | 'preference' | 'threshold' {
   if (key.startsWith('approval_rate_') || key.startsWith('preferred_action_')) return 'pattern';

@@ -19,7 +19,7 @@ export function StatusPanel() {
   } | null>(null);
 
   useEffect(() => {
-    fetch('http://localhost:3000/api/health')
+    fetch('/api/health')
       .then((r) => r.json())
       .then((d) => { if (!d.error) setHealth(d); })
       .catch(() => {});
